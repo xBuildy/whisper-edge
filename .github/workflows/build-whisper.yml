@@ -8,7 +8,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: xbuildy/whisper-edge
 
 jobs:
   build-and-push:
@@ -31,16 +31,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
-            type=ref,event=tag
-            type=sha
-
       - name: Build and push GPU image
         uses: docker/build-push-action@v5
         with:
@@ -50,7 +40,6 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:gpu
-          labels: ${{ steps.meta.outputs.labels }}
 
       - name: Build and push CPU image
         uses: docker/build-push-action@v5
@@ -60,4 +49,3 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cpu
-          labels: ${{ steps.meta.outputs.labels }}
