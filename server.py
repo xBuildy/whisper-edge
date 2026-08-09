@@ -11,36 +11,52 @@ Endpoints:
 """
 
 import os
+import sys
 import tempfile
 import httpx
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
-from faster_whisper import WhisperModel
 
 # ── Config ─────────────────────────────────────────────
-MODEL_SIZE = os.environ.get("WHISPER_MODEL", "large-v3")
-DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
-COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "float16")
+MODEL_SIZE = os.environ.get("WHISPER_MODEL", "medium")
+DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
+COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
 NUM_WORKERS = int(os.environ.get("WHISPER_WORKERS", "1"))
+PORT = int(os.environ.get("PORT", "8000"))
 
 app = FastAPI(title="Whisper EdgeCloud", version="1.0.0")
 
-# Lazy-loaded model (loads on first request to avoid startup timeout)
+# Lazy-loaded model — import happens on first use
 _model = None
-_model_lock = None
+_whisper_import_error = None
+
+def _try_import():
+    global _whisper_import_error
+    if _whisper_import_error is not None:
+        return None, _whisper_import_error
+    try:
+        from faster_whisper import WhisperModel
+        return WhisperModel, None
+    except Exception as e:
+        _whisper_import_error = str(e)
+        print(f"[ERROR] Failed to import faster_whisper: {e}", file=sys.stderr, flush=True)
+        return None, _whisper_import_error
 
 def get_model():
     global _model
     if _model is None:
-        print(f"Loading faster-whisper model: {MODEL_SIZE} on {DEVICE} ({COMPUTE_TYPE})")
+        WhisperModel, err = _try_import()
+        if err:
+            raise HTTPException(status_code=503, detail=f"Whisper not available: {err}")
+        print(f"Loading faster-whisper model: {MODEL_SIZE} on {DEVICE} ({COMPUTE_TYPE})", flush=True)
         _model = WhisperModel(
             MODEL_SIZE,
             device=DEVICE,
             compute_type=COMPUTE_TYPE,
             num_workers=NUM_WORKERS,
         )
-        print(f"Model loaded: {MODEL_SIZE}")
+        print(f"Model loaded: {MODEL_SIZE}", flush=True)
     return _model
 
 
@@ -76,7 +92,15 @@ def transcribe_audio(audio_path: str, language: str = None, word_timestamps: boo
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "model": MODEL_SIZE, "device": DEVICE}
+    WhisperModel, err = _try_import()
+    return {
+        "status": "healthy",
+        "model": MODEL_SIZE,
+        "device": DEVICE,
+        "whisper_available": err is None,
+        "whisper_error": err,
+        "port": PORT,
+    }
 
 
 @app.get("/models")
@@ -93,7 +117,6 @@ async def transcribe_upload(
     language: str = Form(default=None),
 ):
     """Upload an audio file and get back timestamped transcription segments."""
-    # Save to temp file
     suffix = os.path.splitext(file.filename or "audio.mp3")[1] or ".mp3"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         content = await file.read()
@@ -121,7 +144,6 @@ async def transcribe_url(body: dict):
     
     language = body.get("language")
     
-    # Download the audio file
     suffix = ".mp3"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -157,9 +179,10 @@ async def load_model(body: dict):
 
 
 if __name__ == "__main__":
+    print(f"Starting Whisper EdgeCloud on port {PORT} (model={MODEL_SIZE}, device={DEVICE})", flush=True)
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", "8000")),
+        port=PORT,
         workers=1,
     )
