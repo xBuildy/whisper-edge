@@ -144,14 +144,22 @@ async def transcribe_url(body: dict):
     
     language = body.get("language")
     
+    # Determine file extension from URL or default to mp3
     suffix = ".mp3"
+    url_lower = url.lower()
+    for ext in [".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".webm"]:
+        if ext in url_lower:
+            suffix = ext
+            break
+    
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        async with httpx.AsyncClient(timeout=60) as client:
+        # follow_redirects=True is critical — many CDNs/storage providers return 301/302
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
             resp = await client.get(url)
             if resp.status_code != 200:
                 raise HTTPException(
                     status_code=502,
-                    detail=f"Failed to download audio: {resp.status_code}"
+                    detail=f"Failed to download audio: HTTP {resp.status_code}"
                 )
             tmp.write(resp.content)
             tmp_path = tmp.name
