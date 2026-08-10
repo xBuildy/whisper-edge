@@ -60,17 +60,23 @@ def get_model():
     return _model
 
 
-def transcribe_audio(audio_path: str, language: str = None, word_timestamps: bool = True):
+def transcribe_audio(audio_path: str, language: str = None, word_timestamps: bool = True,
+                     vad_filter: bool = True, vad_min_silence_ms: int = 500):
     """Transcribe audio file and return segments with timestamps."""
     model = get_model()
     
-    segments, info = model.transcribe(
-        audio_path,
+    kwargs = dict(
         language=language,
         word_timestamps=word_timestamps,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500),
     )
+    
+    if vad_filter:
+        kwargs["vad_filter"] = True
+        kwargs["vad_parameters"] = dict(min_silence_duration_ms=vad_min_silence_ms)
+    else:
+        kwargs["vad_filter"] = False
+    
+    segments, info = model.transcribe(audio_path, **kwargs)
     
     result_segments = []
     for i, segment in enumerate(segments):
@@ -115,6 +121,8 @@ async def list_models():
 async def transcribe_upload(
     file: UploadFile = File(...),
     language: str = Form(default=None),
+    vad_filter: bool = Form(default=True),
+    vad_min_silence_ms: int = Form(default=500),
 ):
     """Upload an audio file and get back timestamped transcription segments."""
     suffix = os.path.splitext(file.filename or "audio.mp3")[1] or ".mp3"
@@ -124,7 +132,9 @@ async def transcribe_upload(
         tmp_path = tmp.name
     
     try:
-        result = transcribe_audio(tmp_path, language=language)
+        result = transcribe_audio(tmp_path, language=language,
+                                  vad_filter=vad_filter,
+                                  vad_min_silence_ms=vad_min_silence_ms)
         return JSONResponse(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -136,13 +146,20 @@ async def transcribe_upload(
 async def transcribe_url(body: dict):
     """Pass an audio URL — server fetches and transcribes.
     
-    Body: { "url": "https://...", "language": "en" (optional) }
+    Body: {
+      "url": "https://...",
+      "language": "en" (optional),
+      "vad_filter": false (optional, default true — disable for music with vocals),
+      "vad_min_silence_ms": 300 (optional, default 500)
+    }
     """
     url = body.get("url")
     if not url:
         raise HTTPException(status_code=400, detail="Missing 'url' field")
     
     language = body.get("language")
+    vad_filter = body.get("vad_filter", True)
+    vad_min_silence_ms = body.get("vad_min_silence_ms", 500)
     
     # Determine file extension from URL or default to mp3
     suffix = ".mp3"
@@ -153,7 +170,6 @@ async def transcribe_url(body: dict):
             break
     
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        # follow_redirects=True is critical — many CDNs/storage providers return 301/302
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
             resp = await client.get(url)
             if resp.status_code != 200:
@@ -165,7 +181,9 @@ async def transcribe_url(body: dict):
             tmp_path = tmp.name
     
     try:
-        result = transcribe_audio(tmp_path, language=language)
+        result = transcribe_audio(tmp_path, language=language,
+                                  vad_filter=vad_filter,
+                                  vad_min_silence_ms=vad_min_silence_ms)
         return JSONResponse(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
